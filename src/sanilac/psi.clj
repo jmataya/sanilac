@@ -17,6 +17,12 @@
          :average {:min 100 :max 300}
          :slow {:min 300}}})
 
+(def field-categories
+  {:cls "CUMULATIVE_LAYOUT_SHIFT_SCORE"
+   :fcp "FIRST_CONTENTFUL_PAINT_MS"
+   :fid "FIRST_INPUT_DELAY_MS"
+   :lcp "LARGEST_CONTENTFUL_PAINT_MS"})
+
 (defn parse-category
   [category]
   (cond
@@ -39,24 +45,36 @@
       (in-range? average-range distribution) :average
       (in-range? slow-range distribution) :slow)))
 
-(defn parse-cls-distributions
+(defn parse-distributions
   "Takes a distribution object adds it to a structured map."
-  [distributions]
+  [distributions metric]
   (reduce (fn [m distribution]
-            (let [key (parse-distribution :cls distribution)
-                  proportion (get distribution "proportion")]
+            (let [key (parse-distribution metric distribution)
+                  proportion (distribution "proportion")]
               (assoc m key proportion)))
           {}
           distributions))
 
-(defn parse-field-cls
+(defn field-metrics
+  "Extracts a given field metrics object from psi-result based on the key passed in."
+  [psi-result key]
+  (let [key-str (field-categories key)]
+    (get-in (json/read-str psi-result) ["loadingExperience" "metrics" key-str])))
+
+(defn parse-field
   "Extracts the distributions for CLS from field data."
-  [psi-result]
-  (let [cls-metrics (get-in psi-result ["loadingExperience" "metrics" "CUMULATIVE_LAYOUT_SHIFT_SCORE"])
-        percentile (get cls-metrics "percentile")
-        distributions (parse-cls-distributions (get cls-metrics "distributions"))
-        category (parse-category (get cls-metrics "category"))]
+  [psi-result metric]
+  (let [metrics (field-metrics psi-result metric)
+        percentile (metrics "percentile")
+        distributions (parse-distributions (metrics "distributions") metric)
+        category (parse-category (metrics "category"))]
     (assoc distributions :category category :percentile percentile)))
+
+(defn parse-results [psi-results]
+  {:field-results {:cls (parse-field psi-results :cls)
+                   :fcp (parse-field psi-results :fcp)
+                   :fid (parse-field psi-results :fid)
+                   :lcp (parse-field psi-results :lcp)}})
 
 (defn parse-error
   "Extract error details from a failed Page Speed Insights API request."
@@ -78,9 +96,8 @@
   "Wrapper around the Page Speed Insights request to return results or an error."
   [url]
   (try+
-    (let [resp (client/get url)
-          resp-body (get resp :body)]
-      (parse-field-cls resp-body))
+    (let [resp (client/get url)]
+      (resp :body))
     (catch [:status 400] {:keys [body]}
       (assoc-in (parse-error body) [:error :type] "BAD_REQUEST"))
     (catch [:status 429] {:keys [body]}
@@ -89,5 +106,6 @@
 (defn query
   "Makes an API request to the Google Page Speed Insights API for a requested URL."
   [url api-key]
-  (let [request-url (str "https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=" url "&key=" api-key)]
-    (get-request request-url)))
+  (let [request-url (str "https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=" url "&key=" api-key)
+        resp (get-request request-url)]
+    (parse-results resp)))
